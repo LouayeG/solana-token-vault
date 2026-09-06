@@ -1,0 +1,15 @@
+target/
+node_modules/
+.anchor/
+dist/
+test-ledger/
+.yarn/
+deploy/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
