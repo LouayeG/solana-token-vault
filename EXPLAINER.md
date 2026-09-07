@@ -51,7 +51,6 @@ pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
     let vault = &mut ctx.accounts.vault;
     vault.owner = ctx.accounts.owner.key();
     vault.mint = ctx.accounts.mint.key();
-    vault.amount = 0;
     vault.bump = ctx.bumps.vault;
     Ok(())
 }
@@ -128,14 +127,12 @@ That's a **CPI**, one program invoking another inside the same transaction.
 The authority here is `owner`, a real wallet that already signed the transaction,
 so `CpiContext::new` is enough. The signature comes along for free.
 
-Then the bookkeeping:
-
-```rust
-vault.amount = vault.amount.checked_add(amount).ok_or(VaultError::MathOverflow)?;
-```
-
-`checked_add` returns `None` instead of wrapping around on overflow. In a
-financial program, plain `+` is how you get a headline written about you.
+And that is the whole instruction — there is deliberately **no** bookkeeping step.
+An earlier version stored a running `vault.amount`, but that only duplicated the
+vault token account's real balance and could drift from it: tokens sent straight
+into the token account weren't counted, and got permanently locked out of
+withdrawal. The token account's own `amount` is the single source of truth, so
+`deposit` records nothing extra. (When two fields can disagree, delete one.)
 
 ---
 
@@ -167,10 +164,11 @@ transfer fails.
 The guard above it matters too:
 
 ```rust
-require!(ctx.accounts.vault.amount >= amount, VaultError::InsufficientFunds);
+require!(ctx.accounts.vault_token_account.amount >= amount, VaultError::InsufficientFunds);
 ```
 
-Check before you transfer, not after.
+Check before you transfer, not after — and check against the token account's real
+balance (the single source of truth), never a counter that can drift.
 
 ---
 
@@ -211,12 +209,18 @@ place instead of scattered through the logic — or forgotten.
 
 ## 6. What to try next (this is what makes it *yours*)
 
-1. Add a `close_vault` instruction that returns the rent to the owner.
-2. Add a time lock: store an `unlock_at: i64` and compare it to
+Two of the original exercises are now built into the program — read their commits
+to see how: **`close_vault`** (returns leftovers and refunds rent) and dropping
+the **`vault.amount`** counter in favour of the token account balance. The program
+also now **emits events** (`DepositMade` / `WithdrawMade` / `VaultClosed`) so an
+off-chain indexer can follow it. Still open, and worth doing yourself:
+
+1. Add a time lock: store an `unlock_at: i64` and compare it to
    `Clock::get()?.unix_timestamp` in `withdraw`.
-3. Let the owner nominate a second signer who can also withdraw.
-4. Replace the manual `vault.amount` bookkeeping with a read of the token
-   account balance — then argue about which is better and why.
+2. Let the owner nominate a second signer who can also withdraw.
+3. Build a tiny client that subscribes to the events and prints a running ledger.
+4. Try it against a Token-2022 mint that has a freeze authority, and notice what
+   changes — the same red flags you'd want to detect in a risky token.
 
 Do at least one of these before you post. "I built the tutorial" is fine;
 "I built the tutorial and then extended it, and here's what broke" is better.
@@ -234,3 +238,4 @@ Do at least one of these before you post. "I built the tutorial" is fine;
 | **Mint** | The SPL account that defines a token (supply, decimals, authority) |
 | **Token account** | Holds a balance of one mint for one owner |
 | **Rent** | The SOL deposit an account holds to stay alive on chain; refundable on close |
+| **Event** | A structured, decodable log a program emits for off-chain indexers to consume |

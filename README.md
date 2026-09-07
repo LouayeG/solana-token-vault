@@ -14,17 +14,18 @@ Vault PDA       = ["vault", owner public key, mint public key]
 Vault token PDA = ["vault-token", owner public key, mint public key]
 ```
 
-The **vault PDA** stores the owner, mint, tracked balance, and PDA bump. The **vault token PDA** is an SPL Token account that holds the deposited tokens and names the vault PDA as its authority.
+The **vault PDA** stores the owner, mint, and PDA bump. The **vault token PDA** is an SPL Token account that holds the deposited tokens and names the vault PDA as its authority — and its balance is the single source of truth (there is no separate tracked counter to drift out of sync).
 
-The program exposes three instructions:
+The program exposes four instructions:
 
 | Instruction | Behavior |
 | --- | --- |
 | `initialize_vault` | Creates both PDAs and records the owner and mint. |
 | `deposit(amount)` | Uses a cross-program invocation (CPI) to transfer tokens from the owner's token account into the vault token account. The owner signs. |
-| `withdraw(amount)` | Checks ownership and the tracked balance, then transfers tokens back. The program signs for the vault PDA using its seeds. |
+| `withdraw(amount)` | Checks ownership and the vault token account balance, then transfers tokens back. The program signs for the vault PDA using its seeds. |
+| `close_vault` | Returns any remaining tokens to the owner, closes the vault token account, and closes the data account — refunding all rent to the owner. |
 
-Anchor account constraints enforce that the signer owns the vault, all accounts use the expected mint, and the supplied PDAs match the expected seeds. Amounts must be non-zero, and checked arithmetic prevents wrapping.
+Anchor account constraints enforce that the signer owns the vault, all accounts use the expected mint, and the supplied PDAs match the expected seeds. Amounts must be non-zero, and the vault token account balance is the single source of truth for withdrawals.
 
 ## Transaction flow
 
@@ -34,6 +35,7 @@ Deposit:    owner's token account -> Vault Token PDA
 Withdraw:   Vault Token PDA -> owner's token account
                                       ^
                     Vault PDA signs with program seeds
+Close:      Vault Token PDA -> owner (leftovers), then both PDAs closed (rent -> owner)
 ```
 
 ## Prerequisites
@@ -57,7 +59,7 @@ anchor test
 
 The first `anchor build` creates a program keypair. `anchor keys sync` writes that generated address into both `Anchor.toml` and `declare_id!` in the Rust source so they agree.
 
-The integration suite covers initialization, deposit, withdrawal, an overdraw attempt, and an unauthorized withdrawal attempt.
+The integration suite covers initialization, deposit, withdrawal, an overdraw attempt, an unauthorized withdrawal attempt, withdrawing tokens sent directly to the vault, and closing the vault.
 
 ## Project structure
 
@@ -81,8 +83,8 @@ For a deeper explanation of PDAs, CPI signing, account constraints, and every ma
 - The vault is scoped to one owner and one mint.
 - Withdrawals require the recorded owner to sign.
 - The SPL Token program performs all token transfers.
-- This implementation tracks deposits in `Vault.amount`. Tokens sent directly to the vault token account are not added to that field and therefore cannot be withdrawn through this version of the program.
-- There is no close instruction, emergency recovery path, upgrade policy, or production audit.
+- The vault token account balance is the single source of truth, so tokens sent directly to it remain withdrawable by the owner.
+- There is no emergency recovery path, upgrade policy, or production audit — this is an educational program, not production-hardened.
 
 ## License
 
