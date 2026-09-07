@@ -6,14 +6,15 @@
 //    deposit tokens into it, and withdraw them later.
 //    Nobody else can touch their tokens — not even the program author.
 //
-//  Three instructions:
+//  Four instructions:
 //    1. initialize_vault  -> create the vault (once per user, per mint)
 //    2. deposit(amount)   -> move tokens from the user's wallet into the vault
 //    3. withdraw(amount)  -> move tokens back out
+//    4. close_vault       -> return any leftovers and reclaim the rent
 // ============================================================================
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, CloseAccount, Mint, Token, TokenAccount, Transfer};
 
 // The on-chain address of this program. `anchor keys sync` overwrites it
 // with your real key after the first build.
@@ -123,6 +124,57 @@ pub mod token_vault {
         });
 
         msg!("Withdrew {} tokens from the vault", amount);
+        Ok(())
+    }
+
+    /// Tears the vault down: returns any remaining tokens to the owner, closes
+    /// the vault's token account, and lets Anchor close the data account — all
+    /// rent flows back to the owner. This is the other half of the account
+    /// lifecycle that `initialize_vault` opened.
+    pub fn close_vault(ctx: Context<CloseVault>) -> Result<()> {
+        let remaining = ctx.accounts.vault_token_account.amount;
+
+        // The PDA signs for both the transfer-out and the token-account close.
+        let owner_key = ctx.accounts.owner.key();
+        let mint_key = ctx.accounts.mint.key();
+        let bump = ctx.accounts.vault.bump;
+        let seeds: &[&[u8]] = &[b"vault", owner_key.as_ref(), mint_key.as_ref(), &[bump]];
+        let signer_seeds = &[seeds];
+
+        // 1. Return any leftover tokens to the owner.
+        if remaining > 0 {
+            let cpi_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_token_account.to_account_info(),
+                    to: ctx.accounts.owner_token_account.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            );
+            token::transfer(cpi_ctx, remaining)?;
+        }
+
+        // 2. Close the now-empty token account; its rent goes to the owner.
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            CloseAccount {
+                account: ctx.accounts.vault_token_account.to_account_info(),
+                destination: ctx.accounts.owner.to_account_info(),
+                authority: ctx.accounts.vault.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token::close_account(cpi_ctx)?;
+
+        // 3. The `vault` data account is closed by Anchor via `close = owner`.
+        emit!(VaultClosed {
+            vault: ctx.accounts.vault.key(),
+            owner: ctx.accounts.owner.key(),
+            returned: remaining,
+        });
+
+        msg!("Vault closed — returned {} tokens", remaining);
         Ok(())
     }
 }
@@ -237,6 +289,42 @@ pub struct Withdraw<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[derive(Accounts)]
+pub struct CloseVault<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    /// `close = owner` tells Anchor to zero this account and refund its rent to
+    /// the owner once the instruction succeeds.
+    #[account(
+        mut,
+        close = owner,
+        seeds = [b"vault", owner.key().as_ref(), mint.key().as_ref()],
+        bump = vault.bump,
+        has_one = owner,
+        has_one = mint
+    )]
+    pub vault: Account<'info, Vault>,
+
+    #[account(
+        mut,
+        seeds = [b"vault-token", owner.key().as_ref(), mint.key().as_ref()],
+        bump
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = owner_token_account.mint == mint.key() @ VaultError::WrongMint,
+        constraint = owner_token_account.owner == owner.key() @ VaultError::WrongOwner
+    )]
+    pub owner_token_account: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+}
+
 // ============================================================================
 //  STATE
 // ============================================================================
@@ -276,6 +364,13 @@ pub struct WithdrawMade {
     pub mint: Pubkey,
     pub amount: u64,
     pub new_balance: u64,
+}
+
+#[event]
+pub struct VaultClosed {
+    pub vault: Pubkey,
+    pub owner: Pubkey,
+    pub returned: u64,
 }
 
 // ============================================================================

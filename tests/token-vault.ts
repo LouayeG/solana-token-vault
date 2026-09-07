@@ -202,4 +202,46 @@ describe("token-vault", () => {
     const after = await getAccount(provider.connection, vaultTokenPda);
     assert.equal(Number(after.amount), 0);
   });
+
+  it("closes the vault, returning leftovers and rent", async () => {
+    // Put some tokens back in so we can prove close_vault returns them.
+    await program.methods
+      .deposit(new anchor.BN(25_000_000))
+      .accounts({
+        owner: owner.publicKey,
+        mint,
+        vault: vaultPda,
+        vaultTokenAccount: vaultTokenPda,
+        ownerTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    const walletBefore = await getAccount(provider.connection, ownerTokenAccount);
+
+    await program.methods
+      .closeVault()
+      .accounts({
+        owner: owner.publicKey,
+        mint,
+        vault: vaultPda,
+        vaultTokenAccount: vaultTokenPda,
+        ownerTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    // Leftover tokens came back to the owner's wallet.
+    const walletAfter = await getAccount(provider.connection, ownerTokenAccount);
+    assert.equal(
+      Number(walletAfter.amount) - Number(walletBefore.amount),
+      25_000_000
+    );
+
+    // Both PDA accounts are gone (rent refunded).
+    const vaultInfo = await provider.connection.getAccountInfo(vaultPda);
+    const vaultTokenInfo = await provider.connection.getAccountInfo(vaultTokenPda);
+    assert.isNull(vaultInfo, "vault data account should be closed");
+    assert.isNull(vaultTokenInfo, "vault token account should be closed");
+  });
 });
