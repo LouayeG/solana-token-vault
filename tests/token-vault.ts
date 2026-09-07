@@ -8,7 +8,7 @@ import {
   mintTo,
   getAccount,
 } from "@solana/spl-token";
-import { PublicKey, Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
+import { PublicKey, Keypair, SystemProgram } from "@solana/web3.js";
 import { assert } from "chai";
 
 describe("token-vault", () => {
@@ -71,7 +71,6 @@ describe("token-vault", () => {
         vaultTokenAccount: vaultTokenPda,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
-        rent: SYSVAR_RENT_PUBKEY,
       })
       .rpc();
 
