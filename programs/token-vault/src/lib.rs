@@ -66,6 +66,16 @@ pub mod token_vault {
         // `vault_token_account`, and its `.amount` is the balance of record.
         token::transfer(cpi_ctx, amount)?;
 
+        // Re-read the token account so the emitted balance reflects the CPI.
+        ctx.accounts.vault_token_account.reload()?;
+        emit!(DepositMade {
+            vault: ctx.accounts.vault.key(),
+            owner: ctx.accounts.owner.key(),
+            mint: ctx.accounts.mint.key(),
+            amount,
+            new_balance: ctx.accounts.vault_token_account.amount,
+        });
+
         msg!("Deposited {} tokens into the vault", amount);
         Ok(())
     }
@@ -101,6 +111,16 @@ pub mod token_vault {
             signer_seeds,
         );
         token::transfer(cpi_ctx, amount)?;
+
+        // Re-read the token account so the emitted balance reflects the CPI.
+        ctx.accounts.vault_token_account.reload()?;
+        emit!(WithdrawMade {
+            vault: ctx.accounts.vault.key(),
+            owner: ctx.accounts.owner.key(),
+            mint: ctx.accounts.mint.key(),
+            amount,
+            new_balance: ctx.accounts.vault_token_account.amount,
+        });
 
         msg!("Withdrew {} tokens from the vault", amount);
         Ok(())
@@ -231,6 +251,31 @@ pub struct Vault {
     pub owner: Pubkey,
     pub mint: Pubkey,
     pub bump: u8,
+}
+
+// ============================================================================
+//  EVENTS
+//  `emit!` writes a structured, decodable log that off-chain services can
+//  subscribe to — the clean way to index on-chain activity instead of scraping
+//  free-text `msg!` lines.
+// ============================================================================
+
+#[event]
+pub struct DepositMade {
+    pub vault: Pubkey,
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub new_balance: u64,
+}
+
+#[event]
+pub struct WithdrawMade {
+    pub vault: Pubkey,
+    pub owner: Pubkey,
+    pub mint: Pubkey,
+    pub amount: u64,
+    pub new_balance: u64,
 }
 
 // ============================================================================
