@@ -7,6 +7,7 @@ import {
   createAccount,
   mintTo,
   getAccount,
+  transfer,
 } from "@solana/spl-token";
 import { PublicKey, Keypair, SystemProgram } from "@solana/web3.js";
 import { assert } from "chai";
@@ -76,7 +77,7 @@ describe("token-vault", () => {
 
     const vault = await program.account.vault.fetch(vaultPda);
     assert.equal(vault.owner.toBase58(), owner.publicKey.toBase58());
-    assert.equal(vault.amount.toNumber(), 0);
+    assert.equal(vault.mint.toBase58(), mint.toBase58());
   });
 
   it("deposits 100 tokens", async () => {
@@ -92,9 +93,7 @@ describe("token-vault", () => {
       })
       .rpc();
 
-    const vault = await program.account.vault.fetch(vaultPda);
     const vaultTokens = await getAccount(provider.connection, vaultTokenPda);
-    assert.equal(vault.amount.toNumber(), 100_000_000);
     assert.equal(Number(vaultTokens.amount), 100_000_000);
   });
 
@@ -111,8 +110,8 @@ describe("token-vault", () => {
       })
       .rpc();
 
-    const vault = await program.account.vault.fetch(vaultPda);
-    assert.equal(vault.amount.toNumber(), 60_000_000);
+    const vaultTokens = await getAccount(provider.connection, vaultTokenPda);
+    assert.equal(Number(vaultTokens.amount), 60_000_000);
   });
 
   it("refuses to withdraw more than the vault holds", async () => {
@@ -172,5 +171,35 @@ describe("token-vault", () => {
     }
 
     assert.isTrue(rejected, "an attacker must not be able to drain the vault");
+  });
+
+  it("withdraws tokens sent directly to the vault (no shadow-counter lock)", async () => {
+    // Send tokens straight into the vault's token account, bypassing deposit().
+    // With the old vault.amount counter these would have been unwithdrawable;
+    // now the token balance is the source of truth, so they come back out.
+    await transfer(
+      provider.connection,
+      owner.payer,
+      ownerTokenAccount,
+      vaultTokenPda,
+      owner.payer,
+      10_000_000
+    );
+
+    const before = await getAccount(provider.connection, vaultTokenPda);
+    await program.methods
+      .withdraw(new anchor.BN(before.amount.toString()))
+      .accounts({
+        owner: owner.publicKey,
+        mint,
+        vault: vaultPda,
+        vaultTokenAccount: vaultTokenPda,
+        ownerTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .rpc();
+
+    const after = await getAccount(provider.connection, vaultTokenPda);
+    assert.equal(Number(after.amount), 0);
   });
 });

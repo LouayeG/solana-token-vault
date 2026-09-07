@@ -24,8 +24,10 @@ pub mod token_vault {
     use super::*;
 
     /// Creates the vault. Two accounts are born here:
-    ///   - `vault`               : a small data account that remembers who owns
-    ///                             what, and how much is inside.
+    ///   - `vault`               : a small data account that records who owns
+    ///                             the vault and which mint it is for. It does
+    ///                             NOT track a balance — the token account below
+    ///                             is the single source of truth for that.
     ///   - `vault_token_account` : the actual SPL token account that holds the
     ///                             tokens. Its authority is the `vault` PDA,
     ///                             which means only this program can move them.
@@ -34,7 +36,6 @@ pub mod token_vault {
 
         vault.owner = ctx.accounts.owner.key();
         vault.mint = ctx.accounts.mint.key();
-        vault.amount = 0;
         // Anchor found the canonical bump for us while deriving the PDA.
         // We store it so future instructions don't have to search for it again.
         vault.bump = ctx.bumps.vault;
@@ -61,16 +62,11 @@ pub mod token_vault {
             ctx.accounts.token_program.to_account_info(),
             cpi_accounts,
         );
+        // No shadow counter to update: the tokens now physically live in
+        // `vault_token_account`, and its `.amount` is the balance of record.
         token::transfer(cpi_ctx, amount)?;
 
-        // Keep our own bookkeeping in sync. checked_add prevents overflow.
-        let vault = &mut ctx.accounts.vault;
-        vault.amount = vault
-            .amount
-            .checked_add(amount)
-            .ok_or(VaultError::MathOverflow)?;
-
-        msg!("Deposited {} — vault now holds {}", amount, vault.amount);
+        msg!("Deposited {} tokens into the vault", amount);
         Ok(())
     }
 
@@ -78,8 +74,11 @@ pub mod token_vault {
     /// The tokens are owned by a PDA, so *the program* signs on its behalf.
     pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         require!(amount > 0, VaultError::ZeroAmount);
+        // The token account balance is the single source of truth. This also
+        // means tokens sent straight into the vault (bypassing `deposit`) are
+        // still withdrawable, instead of being locked out by a stale counter.
         require!(
-            ctx.accounts.vault.amount >= amount,
+            ctx.accounts.vault_token_account.amount >= amount,
             VaultError::InsufficientFunds
         );
 
@@ -103,13 +102,7 @@ pub mod token_vault {
         );
         token::transfer(cpi_ctx, amount)?;
 
-        let vault = &mut ctx.accounts.vault;
-        vault.amount = vault
-            .amount
-            .checked_sub(amount)
-            .ok_or(VaultError::MathOverflow)?;
-
-        msg!("Withdrew {} — vault now holds {}", amount, vault.amount);
+        msg!("Withdrew {} tokens from the vault", amount);
         Ok(())
     }
 }
@@ -168,7 +161,6 @@ pub struct Deposit<'info> {
     /// `has_one` re-checks that the stored owner/mint match the accounts
     /// passed in — cheap insurance against someone swapping accounts.
     #[account(
-        mut,
         seeds = [b"vault", owner.key().as_ref(), mint.key().as_ref()],
         bump = vault.bump,
         has_one = owner,
@@ -201,7 +193,6 @@ pub struct Withdraw<'info> {
     pub mint: Account<'info, Mint>,
 
     #[account(
-        mut,
         seeds = [b"vault", owner.key().as_ref(), mint.key().as_ref()],
         bump = vault.bump,
         has_one = owner,
@@ -231,14 +222,14 @@ pub struct Withdraw<'info> {
 // ============================================================================
 
 /// `InitSpace` makes Anchor compute the byte size of this struct for us:
-/// 32 (owner) + 32 (mint) + 8 (amount) + 1 (bump) = 73 bytes, plus the
-/// 8-byte discriminator Anchor adds in front of every account.
+/// 32 (owner) + 32 (mint) + 1 (bump) = 65 bytes, plus the 8-byte discriminator
+/// Anchor adds in front of every account. The balance is intentionally NOT
+/// stored here — it lives in the vault's token account.
 #[account]
 #[derive(InitSpace)]
 pub struct Vault {
     pub owner: Pubkey,
     pub mint: Pubkey,
-    pub amount: u64,
     pub bump: u8,
 }
 
@@ -252,8 +243,6 @@ pub enum VaultError {
     ZeroAmount,
     #[msg("Not enough tokens in the vault")]
     InsufficientFunds,
-    #[msg("Arithmetic overflow")]
-    MathOverflow,
     #[msg("Token account is for a different mint")]
     WrongMint,
     #[msg("Token account belongs to someone else")]
